@@ -28,8 +28,11 @@ const demoBatches = () => [
   { id: 'a0', n: 0, label: 'Clinic water', bottles: 10, size: 1.5, start: localAt(PLACES.kisumu, 7, 30, -3), finished: localAt(PLACES.kisumu, 15, 0, -3), place: kisumu, mode: 'forecast', notified: true },
 ]
 
-async function shot(file, { place, lang = 'en', hash = 'today', batches = [], width = 1440, height = 1000, mobile = false, scale = 1, before, fullPage = false, clarity = null }) {
+async function shot(file, { place, lang = 'en', hash = 'today', batches = [], width = 1440, height = 1000, mobile = false, scale = 1, before, fullPage = false, clarity = null, family = null }) {
   const page = await launch({ width, height, mobile, scale })
+  // No service worker here: its precache burst makes python's http.server drop module requests.
+  await page.send('Network.enable')
+  await page.send('Network.setBlockedURLs', { urls: ['*sw.js'] })
   await page.goto(BASE + '#' + hash)
   const p = PLACES[place]
   const seed = {
@@ -37,6 +40,7 @@ async function shot(file, { place, lang = 'en', hash = 'today', batches = [], wi
     'sundose:lang': lang,
     'sundose:batches': JSON.stringify(batches),
     ...(clarity ? { 'sundose:clarity': JSON.stringify(clarity) } : {}),
+    ...(family ? { 'sundose:family': JSON.stringify(family) } : {}),
   }
   await page.eval(`localStorage.clear(); Object.entries(${JSON.stringify(seed)}).forEach(([k, v]) => localStorage.setItem(k, v)); true`)
   await page.reload()
@@ -58,7 +62,16 @@ async function shot(file, { place, lang = 'en', hash = 'today', batches = [], wi
 const only = process.argv[2]
 const run = (name, fn) => (!only || name.includes(only) ? fn() : null)
 
-await run('01', () => shot('01-today.png', { place: 'cochabamba' }))
+const household = { people: 5, litres: 2, size: 1.5 }
+// Load the past year on the Plan tab and wait for the calendar to draw.
+const loadYear = async (page) => {
+  await page.eval(`document.querySelector('[data-action=year]')?.click(); true`)
+  for (let i = 0; i < 80 && !(await page.eval(`!!document.querySelector('.ygrid')`)); i++) await page.wait(250)
+  await page.eval(`document.getElementById('view').classList.remove('enter'); true`)
+  await page.wait(400)
+}
+
+await run('01', () => shot('01-today.png', { place: 'cochabamba', family: household }))
 await run('02', () => shot('02-bottles.png', { place: 'kisumu', hash: 'bottles', batches: demoBatches() }))
 await run('03', () => shot('03-guide.png', { place: 'kisumu', hash: 'guide', clarity: 'no' }))
 await run('04', () => shot('04-science.png', { place: 'kisumu', hash: 'science' }))
@@ -80,3 +93,16 @@ await run('06', () => shot('06-print.png', {
     await page.wait(300)
   },
 }))
+await run('08', () => shot('08-plan.png', { place: 'kisumu', hash: 'plan', family: household, height: 1640, before: loadYear }))
+await run('09', () => shot('09-qr.png', {
+  place: 'kisumu', family: household,
+  before: async (page) => {
+    await page.eval(`document.querySelector('[data-action=qr]').click(); true`)
+    await page.wait(300)
+  },
+}))
+await run('m4', () => shot('m4-plan-fr.png', { place: 'kisumu', lang: 'fr', hash: 'plan', family: household, width: 390, height: 844, mobile: true, scale: 2, before: async (page) => {
+  await loadYear(page)
+  await page.eval(`document.querySelector('.year').scrollIntoView({ block: 'start' }); window.scrollBy(0, -70); true`)
+  await page.wait(300)
+} }))

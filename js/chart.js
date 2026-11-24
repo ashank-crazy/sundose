@@ -55,6 +55,13 @@ export function sunChart(series, day, now, { fmtTime, label, markers = [] }) {
     }
   }
 
+  // The midday window the noon rule asks for (solar noon ± 2 h).
+  const ma = X(day.noon - RULES.noonHalfWindow)
+  const mb = X(day.noon + RULES.noonHalfWindow)
+  const midday = label.midday
+    ? `<g class="midday"><rect x="${ma.toFixed(1)}" y="${M.t}" width="${(mb - ma).toFixed(1)}" height="${(base - M.t).toFixed(1)}"/><text x="${((ma + mb) / 2).toFixed(1)}" y="${base - 6}" text-anchor="middle">${label.midday}</text></g>`
+    : ''
+
   const strong = Y(RULES.strongSun)
   const marks = markers
     .filter((m) => m.t > x0 && m.t < x1)
@@ -68,6 +75,7 @@ export function sunChart(series, day, now, { fmtTime, label, markers = [] }) {
       </linearGradient>
       <clipPath id="past"><rect x="0" y="0" width="${nowX ?? (now >= x1 ? W : 0)}" height="${H}"/></clipPath>
     </defs>
+    ${midday}
     ${grid.join('')}
     ${ticks.join('')}
     ${clouds.join('')}${rain.join('')}
@@ -81,4 +89,19 @@ export function sunChart(series, day, now, { fmtTime, label, markers = [] }) {
     <text x="${M.l - 6}" y="${M.t - 18}" class="tick unit" text-anchor="end">${label.cloud}</text>
     <text x="8" y="${(M.t + base) / 2}" class="tick unit" transform="rotate(-90 8 ${(M.t + base) / 2})" text-anchor="middle">W/m²</text>
   </svg>`
+}
+
+// A tiny sunlight curve for one day (sunrise to sunset), for the day cards.
+export function sparkline(series, day) {
+  const w = 120
+  const h = 34
+  const pts = series.slots.filter((p) => p.end > day.sunrise && p.start < day.sunset)
+  if (!pts.length) return ''
+  const X = (t) => ((t - day.sunrise) / (day.sunset - day.sunrise)) * w
+  const Y = (v) => h - 2 - (Math.min(v, 1100) / 1100) * (h - 4)
+  let d = `M0 ${h}`
+  for (const p of pts) d += `L${X((p.start + p.end) / 2).toFixed(1)} ${Y(p.ghi).toFixed(1)}`
+  d += `L${w} ${h}Z`
+  const strong = Y(RULES.strongSun).toFixed(1)
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true"><path d="${d}"/><line x1="0" x2="${w}" y1="${strong}" y2="${strong}"/></svg>`
 }

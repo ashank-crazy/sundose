@@ -1,6 +1,6 @@
 // Offline support: the app shell is cached on install and served cache-first, refreshed in the
 // background. Forecasts are cached by the app itself in localStorage, so they are not handled here.
-const CACHE = 'sundose-v1'
+const CACHE = 'sundose-v2'
 const SHELL = [
   './',
   './index.html',
@@ -12,6 +12,7 @@ const SHELL = [
   './js/weather.js',
   './js/chart.js',
   './js/icons.js',
+  './js/qr.js',
   './icons/logo.svg',
   './icons/icon-192.png',
   './icons/icon-512.png',

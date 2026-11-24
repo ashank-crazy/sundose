@@ -88,3 +88,60 @@ export async function searchPlaces(query, lang) {
     lon: r.longitude,
   }))
 }
+
+// ---------- the past year (on demand, ~50 KB) ----------
+const YEAR_PREFIX = 'sundose:year:'
+const YEAR_FRESH_MS = 14 * 24 * 3600e3
+
+const isoDay = (t) => new Date(t).toISOString().slice(0, 10)
+
+function yearUrl(p) {
+  // The reanalysis archive runs about 5 days behind, so end a week ago.
+  const end = Date.now() - 7 * 864e5
+  const q = new URLSearchParams({
+    latitude: round(p.lat),
+    longitude: round(p.lon),
+    start_date: isoDay(end - 364 * 864e5),
+    end_date: isoDay(end),
+    hourly: 'shortwave_radiation,cloud_cover,precipitation',
+    daily: 'sunrise,sunset',
+    timezone: 'auto',
+    timeformat: 'unixtime',
+  })
+  return `https://archive-api.open-meteo.com/v1/archive?${q}`
+}
+
+// Only the per-day verdicts are kept, as [month, day, verdict letter, kWh×10] (a few KB).
+const V = { one: 'o', two: 't', rain: 'r' }
+const VBACK = { o: 'one', t: 'two', r: 'rain' }
+
+export function cachedYear(place) {
+  try {
+    const c = JSON.parse(localStorage.getItem(YEAR_PREFIX + placeKey(place)))
+    if (!c || Date.now() - c.at > YEAR_FRESH_MS) return null
+    return { at: c.at, days: c.days.map(([y, m, d, v, g]) => ({ y, m, d, v: VBACK[v], ghi: g / 10 })) }
+  } catch {
+    return null
+  }
+}
+
+export async function getYear(place, compute) {
+  const have = cachedYear(place)
+  if (have) return have
+  const raw = await fetchJSON(yearUrl(place), 30000)
+  const days = compute(raw)
+  const at = Date.now()
+  try {
+    for (let i = localStorage.length - 1; i >= 0; i--) {
+      const k = localStorage.key(i)
+      if (k && k.startsWith(YEAR_PREFIX)) localStorage.removeItem(k)
+    }
+    localStorage.setItem(
+      YEAR_PREFIX + placeKey(place),
+      JSON.stringify({ at, days: days.map((x) => [x.y, x.m, x.d, V[x.v], Math.round(x.ghi * 10)]) }),
+    )
+  } catch {
+    /* storage full: still shown this session */
+  }
+  return { at, days }
+}

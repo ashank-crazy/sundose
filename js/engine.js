@@ -218,3 +218,94 @@ export function firewoodKg(litres) {
   const kWhPerLitre = (4.186 * 75) / 3600
   return (litres * kWhPerLitre) / 0.15 / 4.4
 }
+
+// ---------- household planning ----------
+// Eawag advises at least two sets of bottles: one in the sun while the other is drunk. On cloudy
+// days a set stays out for two days, so a third set keeps drinking water flowing.
+export function familyPlan({ people, litres, size }) {
+  const daily = people * litres
+  const perDay = Math.ceil(daily / size - 1e-9)
+  return { daily, perDay, own: perDay * 3, monthLitres: daily * 30, monthWoodKg: firewoodKg(daily * 30) }
+}
+
+// ---------- the past year ----------
+// Open-Meteo's archive (ERA5 reanalysis) gives hourly sunlight as the mean of the preceding hour.
+export function normalizeHourly(raw) {
+  const h = raw.hourly
+  const d = raw.daily
+  const slots = []
+  const hours = []
+  for (let i = 0; i < h.time.length; i++) {
+    const end = h.time[i] * 1000
+    const ghi = h.shortwave_radiation[i]
+    if (ghi != null) slots.push({ start: end - HOUR, end, ghi })
+    hours.push({ start: end - HOUR / 2, end: end + HOUR / 2, cloud: h.cloud_cover[i], precip: h.precipitation[i] ?? 0 })
+  }
+  const days = []
+  for (let i = 0; i < d.time.length; i++) {
+    if (d.sunrise[i] == null || d.sunset[i] == null) continue
+    const sunrise = d.sunrise[i] * 1000
+    const sunset = d.sunset[i] * 1000
+    days.push({ date: d.time[i] * 1000, sunrise, sunset, noon: (sunrise + sunset) / 2, ghiSum: null, rainHours: 0 })
+  }
+  return { tz: raw.timezone, slots, hours, days, start: slots[0]?.start ?? 0, end: slots.at(-1)?.end ?? 0 }
+}
+
+function within(list, t0, t1) {
+  const out = []
+  for (let i = firstEndingAfter(list, t0); i < list.length && list[i].start < t1; i++) out.push(list[i])
+  return out
+}
+
+// Run the day verdict on every past day. Each day is judged on its own (bottles out at sunrise,
+// ready by sunset?), exactly like the forecast days. Days with missing sunlight data are skipped.
+export function yearOutlook(raw) {
+  const s = normalizeHourly(raw)
+  const offset = (raw.utc_offset_seconds ?? 0) * 1000
+  const out = []
+  for (const day of s.days) {
+    const slots = within(s.slots, day.sunrise, day.sunset)
+    if (slots.length < (day.sunset - day.sunrise) / HOUR - 1) continue
+    const sub = {
+      tz: s.tz,
+      slots: within(s.slots, day.sunrise - HOUR, day.sunset + HOUR),
+      hours: within(s.hours, day.sunrise - HOUR, day.sunset + HOUR),
+      days: [day],
+      start: day.sunrise - HOUR,
+      end: day.sunset,
+    }
+    const o = dayOutlook(sub, day)
+    const local = new Date(day.noon + offset)
+    out.push({ y: local.getUTCFullYear(), m: local.getUTCMonth(), d: local.getUTCDate(), v: o.verdict, ghi: o.ghi })
+  }
+  return out
+}
+
+// Group a year of day verdicts by calendar month: the fastest months (most one-day days), slower
+// months (mostly two-day days, so more bottles are needed) and rainy months (SODIS often fails).
+export function yearSummary(days) {
+  const months = Array.from({ length: 12 }, (_, m) => ({ m, n: 0, one: 0, two: 0, rain: 0, ghi: 0 }))
+  const total = { n: 0, one: 0, two: 0, rain: 0 }
+  for (const x of days) {
+    const mo = months[x.m]
+    mo.n++
+    mo[x.v]++
+    mo.ghi += x.ghi
+    total.n++
+    total[x.v]++
+  }
+  const seen = months.filter((mo) => mo.n)
+  const share = (mo, k) => mo[k] / mo.n
+  const pick = (k, min, dir = -1) =>
+    seen
+      .filter((mo) => share(mo, k) >= min)
+      .sort((a, b) => dir * (share(a, k) - share(b, k)) || b.ghi / b.n - a.ghi / a.n)
+      .slice(0, 3)
+  return {
+    months,
+    total,
+    fast: pick('one', 0.5).sort((a, b) => a.m - b.m),
+    slow: pick('two', 0.5).sort((a, b) => a.m - b.m),
+    wet: pick('rain', 0.15).sort((a, b) => a.m - b.m),
+  }
+}

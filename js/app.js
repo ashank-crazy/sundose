@@ -1,13 +1,15 @@
 import { tr, lang, setLang, LANGS } from './i18n.js'
 import {
   RULES, evaluate, readyAt, dayOutlook, planDay, focusDay, dayIndexAt, manualReadyAt, firewoodKg,
+  familyPlan, yearOutlook, yearSummary,
 } from './engine.js'
-import { getForecast, cachedForecast, searchPlaces, placeKey, pruneCache } from './weather.js'
-import { sunChart } from './chart.js'
+import { getForecast, cachedForecast, searchPlaces, placeKey, pruneCache, getYear, cachedYear } from './weather.js'
+import { sunChart, sparkline } from './chart.js'
 import { icons, logo, steps, weatherIcon } from './icons.js'
+import { qrSvg } from './qr.js'
 
 const HOUR = 3600e3
-const TABS = ['today', 'bottles', 'guide', 'science']
+const TABS = ['today', 'bottles', 'plan', 'guide', 'science']
 const EXAMPLES = [
   { name: 'Kisumu', region: 'Kenya', lat: -0.1, lon: 34.76 },
   { name: 'Cochabamba', region: 'Bolivia', lat: -17.39, lon: -66.16 },
@@ -34,8 +36,31 @@ const store = {
   },
 }
 
+// A shared link (?p=lat,lon,name) opens the same town directly, e.g. from a QR code on a notice board.
+function placeFromUrl() {
+  const p = new URLSearchParams(location.search).get('p')
+  if (!p) return null
+  const [lat, lon, ...rest] = p.split(',')
+  const la = Number(lat)
+  const lo = Number(lon)
+  if (!lat || !lon || !Number.isFinite(la) || !Number.isFinite(lo) || Math.abs(la) > 90 || Math.abs(lo) > 180) return null
+  const name = rest.join(',').trim().slice(0, 60) || `${la.toFixed(2)}, ${lo.toFixed(2)}`
+  return { name, region: '', lat: la, lon: lo }
+}
+const linked = placeFromUrl()
+if (linked) {
+  store.set('place', linked)
+  history.replaceState(null, '', location.pathname + location.hash)
+}
+
+const FAMILY_DEFAULT = { people: 5, litres: 2, size: 1.5 }
+
 const state = {
   place: store.get('place', null),
+  family: store.get('family', null),
+  year: null,
+  speaking: false,
+  enter: false,
   batches: store.get('batches', []),
   wx: null,
   loading: false,
@@ -102,6 +127,15 @@ function toast(msg) {
 }
 
 const placeLabel = (p) => (p ? p.name : tr('place.set'))
+const famOf = () => ({ ...FAMILY_DEFAULT, ...(state.family || {}) })
+const lit = (v) => num(v, v % 1 ? 1 : 0)
+const r2 = (x) => (Math.round(x * 100) / 100).toFixed(2)
+
+function placeUrl(p = state.place) {
+  const u = new URL(location.pathname, location.origin)
+  if (p) u.searchParams.set('p', `${r2(p.lat)},${r2(p.lon)}${p.mine ? '' : `,${p.name}`}`)
+  return u.href
+}
 const saveBatches = () => store.set('batches', state.batches)
 const batchName = (b) => b.label || tr('batch.label', { n: b.n })
 const litresOf = (b) => b.bottles * b.size
@@ -160,7 +194,7 @@ async function loadBatchPlaces() {
 }
 
 function setPlace(p) {
-  state.place = { name: p.name, region: p.region || '', lat: p.lat, lon: p.lon }
+  state.place = { name: p.name, region: p.region || '', lat: p.lat, lon: p.lon, ...(p.mine ? { mine: true } : {}) }
   store.set('place', state.place)
   state.wx = null
   state.results = null
@@ -280,7 +314,7 @@ function forecastText() {
   const m = todayModel()
   const v = m.outlook.verdict
   const [a, b] = adviceTiles(m)
-  const url = location.origin + location.pathname
+  const url = placeUrl()
   return [
     `☀ Sundose · ${state.place.name}`,
     `${dayLabel(m.day.noon, m.tz)}: ${tr(`verdict.${v}.title`)}. ${tr(`verdict.${v}.body`)}`,
@@ -332,7 +366,7 @@ function viewToday() {
   const days = s.days.slice(todayIdx)
   const chart = sunChart(s, day, now, {
     fmtTime: (t) => new Intl.DateTimeFormat(lang(), { hour: 'numeric', timeZone: tz }).format(t),
-    label: { strong: tr('chart.strong'), cloud: tr('chart.cloud'), aria: tr('chart.aria', { day: dayLabel(day.noon, tz) }) },
+    label: { strong: tr('chart.strong'), cloud: tr('chart.cloud'), midday: tr('chart.midday'), aria: tr('chart.aria', { day: dayLabel(day.noon, tz) }) },
     markers: plan.latest && plan.latest > now ? [{ t: plan.latest, label: tr('chart.latest'), cls: 'latest' }] : [],
   })
   const active = state.batches.filter((x) => !x.finished)
@@ -345,11 +379,17 @@ function viewToday() {
     </div>
     <div class="hero-icon">${weatherIcon(v)}</div>
     <div class="tiles">
-      <div class="tile"><span>${esc(a.label)}</span><b>${esc(a.value)}</b></div>
-      <div class="tile"><span>${esc(b.label)}</span><b>${esc(b.value)}</b></div>
+      <div class="tile"><span class="tl">${icons.clock}${esc(a.label)}</span><b>${esc(a.value)}</b></div>
+      <div class="tile"><span class="tl">${icons.sunset}${esc(b.label)}</span><b>${esc(b.value)}</b></div>
     </div>
+    ${
+      state.family && v !== 'rain'
+        ? `<p class="hh">${icons.users}<span>${tr('hero.family', { n: familyPlan(famOf()).perDay, size: lit(famOf().size) })}</span> <a href="#plan">${tr('hero.familyEdit')}</a></p>`
+        : ''
+    }
     <div class="row hero-actions">
       <button class="btn primary big" data-action="add">${icons.bottle}<span>${tr('cta.start')}</span></button>
+      ${'speechSynthesis' in window ? `<button class="btn" data-action="speak" aria-pressed="${state.speaking}">${state.speaking ? icons.stop : icons.speaker}<span>${tr(state.speaking ? 'speak.stop' : 'speak.listen')}</span></button>` : ''}
       ${active.length ? `<a class="btn" href="#bottles">${tr('cta.myBottles', { n: active.length })}</a>` : ''}
     </div>
   </section>
@@ -376,8 +416,8 @@ function viewToday() {
             <span class="dname">${esc(dayLabel(d.noon, tz, true))}</span>
             <span class="dicon">${weatherIcon(o.verdict)}</span>
             <span class="vchip">${tr(`chip.${o.verdict}`)}</span>
-            <span class="dstat"><b>${num(o.ghi)}</b> kWh/m²</span>
-            <span class="dstat">${o.meanCloud == null ? '–' : int(o.meanCloud)}% ${tr('outlook.cloud')}</span>
+            ${sparkline(s, d)}
+            <span class="dstat"><b>${num(o.ghi)}</b> kWh/m² · ${o.meanCloud == null ? '–' : int(o.meanCloud)}% ${tr('outlook.cloud')}</span>
           </li>`
         })
         .join('')}
@@ -392,6 +432,7 @@ function viewToday() {
     <div class="row">
       <button class="btn" data-action="share">${icons.share}<span>${tr('cta.share')}</span></button>
       <button class="btn" data-action="whatsapp">${icons.chat}<span>${tr('cta.whatsapp')}</span></button>
+      <button class="btn" data-action="qr">${icons.qr}<span>${tr('cta.qr')}</span></button>
       <button class="btn" data-action="print">${icons.print}<span>${tr('cta.print')}</span></button>
     </div>
   </section>
@@ -494,6 +535,137 @@ function viewBottles() {
   }`
 }
 
+// ---------- plan: household bottles and the past year ----------
+function familyOut() {
+  const f = famOf()
+  const p = familyPlan(f)
+  let sched = ''
+  const wx = state.wx
+  if (state.place && wx && Date.now() < wx.series.end - 2 * HOUR) {
+    const s = wx.series
+    const now = Date.now()
+    const tz = s.tz
+    const days = s.days.slice(dayIndexAt(s, now)).filter((d) => d.sunset - HOUR > now)
+    sched = `<h3>${tr('fam.next', { place: esc(state.place.name) })}</h3><ul class="sched">${days
+      .map((d) => {
+        const o = dayOutlook(s, d)
+        let text
+        if (o.verdict === 'rain') text = tr('fam.rain', { l: lit(p.daily) })
+        else if (o.verdict === 'two') text = tr('fam.two', { n: p.perDay })
+        else {
+          const pl = planDay(s, d, Math.max(now, d.sunrise))
+          text = pl.latest ? tr('fam.one', { n: p.perDay, time: fmtTime(pl.latest, tz) }) : tr('fam.late')
+        }
+        return `<li class="v-${o.verdict}"><span class="dicon">${weatherIcon(o.verdict)}</span><span><b>${esc(dayLabel(d.noon, tz))}:</b> ${text}</span></li>`
+      })
+      .join('')}</ul>`
+  }
+  return `<div class="famstats">
+      <div><b>${lit(p.daily)} L</b><span>${tr('fam.daily')}</span></div>
+      <div><b>${int(p.perDay)}</b><span>${tr('fam.bottles', { size: lit(f.size) })}</span></div>
+      <div><b>${int(p.own)}</b><span>${tr('fam.own')}</span></div>
+    </div>
+    <p class="muted small">${tr('fam.ownHint')}</p>
+    ${sched}
+    <p class="impact">${icons.drop}<span>${tr('fam.month', { l: int(p.monthLitres), kg: int(p.monthWoodKg) })}</span></p>`
+}
+
+function viewPlan() {
+  const f = famOf()
+  const opts = (vals, cur, fmt) => vals.map((v) => `<option value="${v}" ${v === cur ? 'selected' : ''}>${fmt(v)}</option>`).join('')
+  return `
+  <section class="page-head"><div><h1>${tr('plan.title')}</h1><p class="lead">${tr('plan.intro')}</p></div></section>
+  <section class="card family">
+    <h2 class="ih">${icons.users}${tr('fam.title')}</h2>
+    <form class="famform" data-form="family">
+      <div class="field"><span id="lbl-people">${tr('fam.people')}</span>
+        <div class="stepper" role="group" aria-labelledby="lbl-people">
+          <button type="button" data-action="fam-step" data-d="-1" aria-label="−">${icons.minus}</button>
+          <input name="people" type="number" min="1" max="50" value="${f.people}" inputmode="numeric" aria-labelledby="lbl-people">
+          <button type="button" data-action="fam-step" data-d="1" aria-label="+">${icons.plus}</button>
+        </div></div>
+      <label class="field"><span>${tr('fam.litres')}</span><select name="litres">${opts([1.5, 2, 3, 4], f.litres, (v) => tr('fam.perDay', { l: lit(v) }))}</select></label>
+      <label class="field"><span>${tr('add.size')}</span><select name="size">${opts([0.5, 1, 1.5, 2], f.size, (v) => `${lit(v)} L`)}</select></label>
+    </form>
+    <div id="famOut" aria-live="polite">${familyOut()}</div>
+  </section>
+  ${viewYear()}`
+}
+
+function saveFamily(form) {
+  const fd = new FormData(form)
+  state.family = {
+    people: Math.max(1, Math.min(50, parseInt(fd.get('people'), 10) || 1)),
+    litres: Number(fd.get('litres')) || FAMILY_DEFAULT.litres,
+    size: Number(fd.get('size')) || FAMILY_DEFAULT.size,
+  }
+  store.set('family', state.family)
+  const out = $('#famOut')
+  if (out) out.innerHTML = familyOut()
+}
+
+const monthName = (m, style = 'short') =>
+  new Intl.DateTimeFormat(lang(), { month: style, timeZone: 'UTC' }).format(Date.UTC(2026, m, 15))
+const listOf = (items) =>
+  typeof Intl.ListFormat === 'function' ? new Intl.ListFormat(lang(), { type: 'conjunction' }).format(items) : items.join(', ')
+
+function viewYear() {
+  if (!state.place) return ''
+  const key = placeKey(state.place)
+  let y = state.year?.key === key ? state.year : null
+  if (!y) {
+    const c = cachedYear(state.place)
+    if (c) y = state.year = { key, status: 'ready', days: c.days }
+  }
+  const head = `<h2 class="ih">${icons.plan}${tr('year.title', { place: esc(state.place.name) })}</h2>`
+  if (!y || y.status === 'error') {
+    return `<section class="card year">${head}<p class="muted">${tr('year.body')}</p>
+      ${y?.status === 'error' ? `<p class="note warn">${tr('year.fail')}</p>` : ''}
+      <div class="row"><button class="btn primary" data-action="year">${icons.download}<span>${tr('year.load')}</span></button>
+      <span class="muted small">${tr('year.size', { kb: 50 })}</span></div></section>`
+  }
+  if (y.status === 'loading') {
+    return `<section class="card year">${head}<div class="loading"><div class="spinner"></div><p>${tr('year.loading')}</p></div></section>`
+  }
+  const sum = yearSummary(y.days)
+  const t = sum.total
+  const pct = (v, n = t.n) => Math.round((100 * v) / Math.max(1, n))
+  const grid = Array.from({ length: 12 }, () => new Array(31).fill(null))
+  for (const d of y.days) grid[d.m][d.d - 1] = d
+  const first = y.days[0]
+  const last = y.days[y.days.length - 1]
+  const fmtD = (d) => new Intl.DateTimeFormat(lang(), { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }).format(Date.UTC(d.y, d.m, d.d))
+  const rows = sum.months
+    .map((mo) => {
+      const cells = grid[mo.m]
+        .map((d, i) => (d ? `<i class="c-${d.v}" title="${i + 1} ${monthName(mo.m, 'long')}: ${tr(`chip.${d.v}`)} · ${num(d.ghi)} kWh/m²"></i>` : '<i></i>'))
+        .join('')
+      const bar = mo.n
+        ? ['one', 'two', 'rain'].map((k) => (mo[k] ? `<i class="c-${k}" style="flex:${mo[k]}"></i>` : '')).join('')
+        : ''
+      return `<div class="yrow"><span class="ym">${monthName(mo.m)}</span><span class="ycells">${cells}</span><span class="ybar" title="${pct(mo.one, mo.n)}% ${tr('year.one')}">${bar}</span></div>`
+    })
+    .join('')
+  const notes = [
+    sum.fast.length ? `<li>${icons.sun}<span>${tr('year.fast', { m: listOf(sum.fast.map((m) => monthName(m.m, 'long'))) })}</span></li>` : '',
+    sum.slow.length ? `<li>${icons.cloudSun}<span>${tr('year.slow', { m: listOf(sum.slow.map((m) => monthName(m.m, 'long'))) })}</span></li>` : '',
+    sum.wet.length
+      ? `<li class="warn">${icons.rain}<span>${tr('year.wet', { m: listOf(sum.wet.map((m) => monthName(m.m, 'long'))) })}</span></li>`
+      : `<li>${icons.drop}<span>${tr('year.dry', { n: t.rain })}</span></li>`,
+  ].join('')
+  return `<section class="card year">${head}
+    <p class="ybig">${tr('year.worked', { p: pct(t.one + t.two) })}</p>
+    <ul class="ystats">
+      <li><i class="c-one"></i><b>${pct(t.one)}%</b> ${tr('year.one')}</li>
+      <li><i class="c-two"></i><b>${pct(t.two)}%</b> ${tr('year.two')}</li>
+      <li><i class="c-rain"></i><b>${pct(t.rain)}%</b> ${tr('year.rain')}</li>
+    </ul>
+    <div class="ygrid" role="img" aria-label="${tr('year.title', { place: esc(state.place.name) })}">${rows}</div>
+    <ul class="ynotes">${notes}</ul>
+    <p class="muted small">${tr('year.source', { from: fmtD(first), to: fmtD(last) })}</p>
+  </section>`
+}
+
 function viewGuide() {
   const keys = ['s1', 's2', 's3', 's4', 's5', 's6']
   return `
@@ -585,7 +757,7 @@ function openAddDialog() {
   const earlier = new Date(Date.now() - HOUR)
   const hhmm = `${String(earlier.getHours()).padStart(2, '0')}:${String(earlier.getMinutes()).padStart(2, '0')}`
   const sizes = [0.5, 1, 1.5, 2]
-  const size = last?.size ?? 1.5
+  const size = last?.size ?? state.family?.size ?? 1.5
   $('#addDialog').innerHTML = `<form class="sheet" data-form="add" novalidate>
     <header><h2>${tr('add.title')}</h2><button type="button" class="iconbtn" data-action="close-dialog" aria-label="${tr('close')}">${icons.x}</button></header>
     ${state.place ? `<p class="muted small">${icons.pin}${esc(state.place.name)}${manual ? ` · ${tr('add.manualNote')}` : ''}</p>` : ''}
@@ -594,7 +766,7 @@ function openAddDialog() {
       <div class="field"><span id="lbl-count">${tr('add.count')}</span>
         <div class="stepper" role="group" aria-labelledby="lbl-count">
           <button type="button" data-action="step" data-d="-1" aria-label="−">${icons.minus}</button>
-          <input name="bottles" type="number" min="1" max="99" value="${last?.bottles ?? 4}" inputmode="numeric" aria-labelledby="lbl-count">
+          <input name="bottles" type="number" min="1" max="99" value="${last?.bottles ?? (state.family ? familyPlan(famOf()).perDay : 4)}" inputmode="numeric" aria-labelledby="lbl-count">
           <button type="button" data-action="step" data-d="1" aria-label="+">${icons.plus}</button>
         </div></div>
       <label class="field"><span>${tr('add.size')}</span>
@@ -694,13 +866,14 @@ function printSheet() {
       <td>${p.latest ? fmtTime(p.latest, tz) : '—'}</td><td>${p.readyIfStart ? paperTime(p.readyIfStart, d, tz) : '—'}</td></tr>`
   })
   $('#print').innerHTML = `
-    <header>${logo}<div><h1>${tr('print.title', { place: esc(state.place.name) })}</h1><p>${tr('print.printed', { date: esc(dateLabel(now, tz)) })}</p></div></header>
+    <header>${logo}<div><h1>${tr('print.title', { place: esc(state.place.name) })}</h1><p>${tr('print.printed', { date: esc(dateLabel(now, tz)) })}</p></div>
+      <div class="pqr">${qrSvg(placeUrl())}<span>${tr('print.scan')}</span></div></header>
     <table><thead><tr><th></th><th>${tr('print.kind')}</th><th>${tr('print.sun')}</th><th>${tr('print.latest')}</th><th>${tr('print.ready')}</th></tr></thead>
     <tbody>${rows.join('')}</tbody></table>
     <ol class="psteps">${['s1', 's2', 's3', 's4', 's5', 's6'].map((k) => `<li><b>${tr(`guide.${k}.t`)}</b> ${tr(`guide.${k}.b`)}</li>`).join('')}</ol>
     <div class="testcard"><span>${tr('print.testLabel')}</span><b>CLEAN WATER · SAFE WATER</b></div>
     <p class="pfoot">${tr('limits.chem')} ${tr('limits.alt')}</p>
-    <p class="pfoot">Sundose · ${esc(location.origin + location.pathname)}</p>`
+    <p class="pfoot">Sundose · ${esc(placeUrl())}</p>`
   window.print()
 }
 
@@ -719,7 +892,7 @@ const actions = {
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         const { latitude: lat, longitude: lon } = pos.coords
-        setPlace({ name: tr('place.mine'), region: `${lat.toFixed(2)}, ${lon.toFixed(2)}`, lat, lon })
+        setPlace({ name: tr('place.mine'), region: `${lat.toFixed(2)}, ${lon.toFixed(2)}`, lat, lon, mine: true })
       },
       () => {
         state.placeMsg = tr('place.denied')
@@ -788,7 +961,128 @@ const actions = {
   },
   whatsapp: () => window.open(`https://wa.me/?text=${encodeURIComponent(forecastText())}`, '_blank', 'noopener'),
   print: () => printSheet(),
+  qr: () => {
+    if (!state.place) return
+    const title = tr('qr.title', { place: esc(state.place.name) })
+    $('#qrDialog').innerHTML = `<div class="sheet qrsheet">
+      <header><h2>${title}</h2><button class="iconbtn" data-action="close-dialog" aria-label="${tr('close')}">${icons.x}</button></header>
+      <div class="qrbox">${qrSvg(placeUrl(), title)}</div>
+      <p class="muted">${tr('qr.body')}</p>
+      <button class="btn" data-action="copy-link">${icons.link}<span>${tr('qr.copy')}</span></button>
+    </div>`
+    $('#qrDialog').showModal()
+  },
+  'copy-link': async () => {
+    try {
+      await navigator.clipboard.writeText(placeUrl())
+      toast(tr('share.copied'))
+    } catch {
+      prompt('', placeUrl())
+    }
+  },
+  speak: () => speak(),
+  install: async () => {
+    if (!installEvt) return
+    installEvt.prompt()
+    try {
+      await installEvt.userChoice
+    } catch {
+      /* dismissed */
+    }
+    installEvt = null
+    renderShell()
+  },
+  'fam-step': (el) => {
+    const input = el.parentElement.querySelector('input')
+    input.value = Math.max(1, Math.min(50, (parseInt(input.value, 10) || 1) + Number(el.dataset.d)))
+    saveFamily(el.closest('form'))
+  },
+  year: async () => {
+    const place = state.place
+    if (!place) return
+    const key = placeKey(place)
+    state.year = { key, status: 'loading' }
+    render()
+    try {
+      const r = await getYear(place, yearOutlook)
+      if (state.year?.key === key) state.year = { key, status: 'ready', days: r.days }
+    } catch {
+      if (state.year?.key === key) state.year = { key, status: 'error' }
+    }
+    if (state.tab === 'plan') render()
+  },
 }
+
+// ---------- read aloud, for people who find reading hard ----------
+function speechText() {
+  const m = todayModel()
+  const v = m.outlook.verdict
+  const [a, b] = adviceTiles(m)
+  const parts = [
+    `${state.place.name}, ${dayLabel(m.day.noon, m.tz)}.`,
+    `${tr(`verdict.${v}.title`)}.`,
+    tr(`verdict.${v}.body`),
+    `${a.label} ${a.value}.`,
+    `${b.label}: ${b.value}.`,
+  ]
+  if (state.family && v !== 'rain') parts.push(`${tr('hero.family', { n: familyPlan(famOf()).perDay, size: lit(famOf().size) })}.`)
+  return parts.join(' ')
+}
+
+function speak() {
+  const synth = window.speechSynthesis
+  if (!synth) return toast(tr('speak.none'))
+  if (state.speaking) {
+    synth.cancel()
+    state.speaking = false
+    return render()
+  }
+  const voices = synth.getVoices()
+  const voice = voices.find((x) => x.lang.toLowerCase().replace('_', '-').startsWith(lang()))
+  if (voices.length && !voice) return toast(tr('speak.none'))
+  const u = new SpeechSynthesisUtterance(speechText())
+  u.lang = voice?.lang || lang()
+  if (voice) u.voice = voice
+  u.rate = 0.9
+  // Some phones accept the request but never start speaking: give up after a few seconds.
+  let started = false
+  const watchdog = setTimeout(() => {
+    if (started) return
+    synth.cancel()
+    state.speaking = false
+    toast(tr('speak.none'))
+    if (state.tab === 'today') render()
+  }, 4000)
+  u.onstart = () => {
+    started = true
+  }
+  u.onend = u.onerror = () => {
+    clearTimeout(watchdog)
+    state.speaking = false
+    if (state.tab === 'today') render()
+  }
+  synth.cancel()
+  state.speaking = true
+  synth.speak(u)
+  render()
+}
+// Voices load in the background in most browsers; ask early so they are ready on the first tap.
+if (window.speechSynthesis) {
+  speechSynthesis.getVoices()
+  speechSynthesis.addEventListener?.('voiceschanged', () => speechSynthesis.getVoices())
+}
+
+// ---------- install as an app ----------
+let installEvt = null
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault()
+  installEvt = e
+  renderShell()
+})
+window.addEventListener('appinstalled', () => {
+  installEvt = null
+  renderShell()
+})
 
 function rerenderPicker() {
   if ($('#placeDialog').open) renderPlaceDialog()
@@ -804,7 +1098,10 @@ document.addEventListener('click', (e) => {
 
 document.addEventListener('submit', async (e) => {
   const form = e.target
-  if (form.dataset.form === 'add') {
+  if (form.dataset.form === 'family') {
+    e.preventDefault()
+    saveFamily(form)
+  } else if (form.dataset.form === 'add') {
     e.preventDefault()
     submitAdd(form)
   } else if (form.dataset.form === 'search') {
@@ -826,8 +1123,15 @@ document.addEventListener('submit', async (e) => {
   }
 })
 
+for (const type of ['input', 'change']) {
+  document.addEventListener(type, (e) => {
+    const form = e.target.closest?.('form[data-form="family"]')
+    if (form && e.target.name) saveFamily(form)
+  })
+}
+
 // Close dialogs when the backdrop is clicked.
-for (const id of ['placeDialog', 'addDialog']) {
+for (const id of ['placeDialog', 'addDialog', 'qrDialog']) {
   document.getElementById(id).addEventListener('click', (e) => {
     if (e.target.tagName === 'DIALOG') e.target.close()
   })
@@ -842,7 +1146,11 @@ function renderShell() {
   $('#placeBtn').setAttribute('aria-label', tr('place.change'))
   $('#langSel').innerHTML = LANGS.map(([code, name]) => `<option value="${code}" ${code === lang() ? 'selected' : ''}>${name}</option>`).join('')
   $('#langSel').setAttribute('aria-label', tr('language'))
-  const navIcons = { today: icons.sun, bottles: icons.bottle, guide: icons.book, science: icons.gauge }
+  const ib = $('#installBtn')
+  ib.hidden = !installEvt
+  ib.innerHTML = `${icons.install}<span>${tr('install')}</span>`
+  ib.setAttribute('aria-label', tr('install'))
+  const navIcons = { today: icons.sun, bottles: icons.bottle, plan: icons.plan, guide: icons.book, science: icons.gauge }
   const active = state.batches.filter((b) => !b.finished).length
   $('#tabs').innerHTML = TABS.map(
     (k) => `<a href="#${k}" class="${state.tab === k ? 'on' : ''}" ${state.tab === k ? 'aria-current="page"' : ''}>${navIcons[k]}<span>${tr(`nav.${k}`)}</span>${k === 'bottles' && active ? `<i class="badge">${active}</i>` : ''}</a>`,
@@ -852,12 +1160,20 @@ function renderShell() {
 
 function render() {
   renderShell()
-  const view = { today: viewToday, bottles: viewBottles, guide: viewGuide, science: viewScience }[state.tab]
-  $('#view').innerHTML = view()
+  const view = { today: viewToday, bottles: viewBottles, plan: viewPlan, guide: viewGuide, science: viewScience }[state.tab]
+  const main = $('#view')
+  main.innerHTML = view()
+  if (state.enter) {
+    state.enter = false
+    main.classList.remove('enter')
+    void main.offsetWidth
+    main.classList.add('enter')
+  }
 }
 
 window.addEventListener('hashchange', () => {
   state.tab = tabFromHash()
+  state.enter = true
   render()
   window.scrollTo({ top: 0 })
 })
