@@ -1,0 +1,12 @@
+{
+  "name": "sundose",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Know when the sun has finished treating your SODIS bottles.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "start": "npx --yes http-server -p 4173 -c-1 ."
+  },
+  "license": "MIT"
+}

@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Sundose: know when the sun has treated your water</title>
+  <meta name="description" content="Free, offline-first companion for solar water disinfection (SODIS). Sundose adds up the real sunlight over your bottles and tells you when the water is ready to drink.">
+  <meta name="theme-color" content="#f2a81d">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/logo.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <meta property="og:title" content="Sundose: know when the sun has treated your water">
+  <meta property="og:description" content="A free SODIS sun meter for any phone. Real sunlight data, offline, in 5 languages.">
+  <meta property="og:image" content="https://ashank-crazy.github.io/sundose/docs/og.png">
+  <meta property="og:url" content="https://ashank-crazy.github.io/sundose/">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <a class="skip" href="#view">Skip to content</a>
+  <header class="top">
+    <a id="brand" class="brand" href="#today" aria-label="Sundose"></a>
+    <div class="top-right">
+      <button id="placeBtn" class="place-chip" type="button"></button>
+      <label class="lang">
+        <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="8.6"/><path d="M3.4 12h17.2M12 3.4c2.4 2.4 3.4 5.3 3.4 8.6s-1 6.2-3.4 8.6c-2.4-2.4-3.4-5.3-3.4-8.6s1-6.2 3.4-8.6z"/></svg>
+        <select id="langSel"></select>
+      </label>
+    </div>
+  </header>
+  <nav id="tabs" class="tabs" aria-label="Sections"></nav>
+  <main id="view" tabindex="-1">
+    <noscript><p class="card">Sundose needs JavaScript to read the sunlight forecast.</p></noscript>
+  </main>
+  <footer id="footer" class="foot"></footer>
+  <dialog id="placeDialog" aria-label="Location"></dialog>
+  <dialog id="addDialog" aria-label="Bottles in the sun"></dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <section id="print" class="print-only" aria-hidden="true"></section>
+</body>
+</html>
